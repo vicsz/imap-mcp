@@ -35,6 +35,10 @@ func logToolItemFailures(operation string, count int) {
 	observability.ItemFailures(operation, count)
 }
 
+func logExportFailures(result imapclient.ExportMessagesResult) {
+	logToolItemFailures("export_messages", result.FailedMessages+result.FailedAttachments+result.FailedMailboxes)
+}
+
 func newServer() *mcp.Server {
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: "imap-mail-mcp", Version: "0.1.0"},
@@ -222,7 +226,7 @@ func exportMessages(ctx context.Context, _ *mcp.CallToolRequest, request imapcli
 		}
 		return nil, imapclient.ExportMessagesResult{}, imapclient.ErrExportFailed
 	}
-	logToolItemFailures("export_messages", result.FailedMessages+result.FailedAttachments)
+	logExportFailures(result)
 	return nil, result, nil
 }
 

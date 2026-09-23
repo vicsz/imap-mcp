@@ -4,7 +4,10 @@ package imapclient
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -121,6 +124,53 @@ func TestSearchUIDRangeUnionIntegration(t *testing.T) {
 	}
 	if len(wantUIDs) != 0 {
 		t.Fatal("combined UID range search omitted an expected message")
+	}
+}
+
+func TestExportMailboxFailureReportingIntegration(t *testing.T) {
+	config := integrationConfig(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	listed, err := ListMailboxes(ctx, config)
+	if err != nil {
+		t.Fatal("could not list mailboxes for export failure probe")
+	}
+	known := make(map[string]bool, len(listed.Mailboxes))
+	for _, mailbox := range listed.Mailboxes {
+		known[mailbox.Name] = true
+	}
+	missing := "CodexBug002Probe-" + fmt.Sprintf("%d", time.Now().UTC().UnixNano())
+	if known[missing] {
+		t.Fatal("generated probe mailbox unexpectedly exists")
+	}
+
+	destination := t.TempDir()
+	result, err := ExportMessages(ctx, config, ExportMessagesRequest{
+		Mailboxes:   []string{DefaultMailbox, missing},
+		Destination: destination,
+		UIDRanges:   []UIDRange{{Start: ^uint32(0), End: ^uint32(0)}},
+	})
+	if err != nil {
+		t.Fatal("live export status probe failed")
+	}
+	if result.Status != "partial" || result.FailedMailboxes != 1 || result.MatchedMessages != 0 || result.ExportedMessages != 0 || result.ManifestPath == "" {
+		t.Fatal("live export status probe returned an unexpected summary")
+	}
+	manifestData, err := os.ReadFile(result.ManifestPath)
+	if err != nil {
+		t.Fatal("live export probe did not preserve its manifest")
+	}
+	var manifest exportManifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		t.Fatal("live export probe manifest was invalid")
+	}
+	if len(manifest.MailboxErrors) != 1 || len(manifest.Messages) != 0 {
+		t.Fatal("live export probe manifest did not record only the expected mailbox failure")
+	}
+	entries, err := os.ReadDir(filepath.Clean(result.RunDirectory))
+	if err != nil || len(entries) != 1 || entries[0].Name() != "manifest.json" {
+		t.Fatal("live export probe unexpectedly created message or attachment files")
 	}
 }
 

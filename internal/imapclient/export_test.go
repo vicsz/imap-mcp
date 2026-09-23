@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -50,7 +51,7 @@ func TestExportMessagesFakeServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExportMessages: %v", err)
 	}
-	if result.MatchedMessages != 3 || result.ExportedMessages != 2 || result.ExportedAttachments != 1 || result.FailedMessages != 1 || result.FailedAttachments != 1 {
+	if result.Status != "partial" || result.FailedMailboxes != 0 || result.MatchedMessages != 3 || result.ExportedMessages != 2 || result.ExportedAttachments != 1 || result.FailedMessages != 1 || result.FailedAttachments != 1 {
 		t.Fatalf("export summary = %#v", result)
 	}
 	manifestData, err := os.ReadFile(result.ManifestPath)
@@ -120,6 +121,93 @@ func TestExportMessagesEmptyResult(t *testing.T) {
 	if result.MatchedMessages != 0 || result.ExportedMessages != 0 {
 		t.Fatalf("empty export summary = %#v", result)
 	}
+	if result.Status != "complete" || result.FailedMailboxes != 0 {
+		t.Fatalf("empty export status = %#v, want complete with no failed mailboxes", result)
+	}
+}
+
+func TestExportMessagesAllMailboxesMissingReportsFailedAndManifest(t *testing.T) {
+	server, user, listener := newSearchTestServer(t)
+	defer server.Close()
+	if err := user.Create("INBOX", nil); err != nil {
+		t.Fatalf("create INBOX: %v", err)
+	}
+	previous := dialExportClient
+	dialExportClient = func(_ string, _ *imapv2client.Options) (*imapv2client.Client, error) {
+		clientConn, serverConn := net.Pipe()
+		listener.connections <- serverConn
+		return imapv2client.New(clientConn, nil), nil
+	}
+	defer func() { dialExportClient = previous }()
+
+	result, err := ExportMessages(context.Background(), Config{Username: "test-user", Password: "test-password"}, ExportMessagesRequest{
+		Mailboxes:   []string{"Missing"},
+		Destination: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("ExportMessages: %v", err)
+	}
+	if result.Status != "failed" || result.FailedMailboxes != 1 || result.MatchedMessages != 0 || result.ManifestPath == "" {
+		t.Fatalf("all-missing-mailbox summary = %#v", result)
+	}
+	manifest := readExportTestManifest(t, result.ManifestPath)
+	if len(manifest.MailboxErrors) != 1 || manifest.MailboxErrors[0].Error != "mailbox not found" {
+		t.Fatalf("mailbox errors = %#v", manifest.MailboxErrors)
+	}
+}
+
+func TestExportMessagesMailboxWorkFailureIsPartial(t *testing.T) {
+	server, user, listener := newSearchTestServer(t)
+	defer server.Close()
+	for _, mailbox := range []string{"INBOX", "Archive"} {
+		if err := user.Create(mailbox, nil); err != nil {
+			t.Fatalf("create mailbox: %v", err)
+		}
+	}
+	previousDial := dialExportClient
+	dialExportClient = func(_ string, _ *imapv2client.Options) (*imapv2client.Client, error) {
+		clientConn, serverConn := net.Pipe()
+		listener.connections <- serverConn
+		return imapv2client.New(clientConn, nil), nil
+	}
+	defer func() { dialExportClient = previousDial }()
+	previousWork := exportMailboxWork
+	exportMailboxWork = func(ctx context.Context, client *imapv2client.Client, mailbox, runDirectory string, request ExportMessagesRequest, manifest *exportManifest, manifestPath string) error {
+		if mailbox == "Archive" {
+			return errors.New("simulated mailbox search failure")
+		}
+		return exportMailbox(ctx, client, mailbox, runDirectory, request, manifest, manifestPath)
+	}
+	defer func() { exportMailboxWork = previousWork }()
+
+	result, err := ExportMessages(context.Background(), Config{Username: "test-user", Password: "test-password"}, ExportMessagesRequest{
+		Mailboxes:   []string{"INBOX", "Archive"},
+		Destination: t.TempDir(),
+		UIDRanges:   []UIDRange{{Start: 99, End: 99}},
+	})
+	if err != nil {
+		t.Fatalf("ExportMessages: %v", err)
+	}
+	if result.Status != "partial" || result.FailedMailboxes != 1 || result.MatchedMessages != 0 || result.ManifestPath == "" {
+		t.Fatalf("mixed mailbox summary = %#v", result)
+	}
+	manifest := readExportTestManifest(t, result.ManifestPath)
+	if len(manifest.MailboxErrors) != 1 || manifest.MailboxErrors[0].Mailbox != "Archive" || manifest.MailboxErrors[0].Error != "mailbox export failed" {
+		t.Fatalf("mailbox errors = %#v", manifest.MailboxErrors)
+	}
+}
+
+func readExportTestManifest(t *testing.T, path string) exportManifest {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	var manifest exportManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("decode manifest: %v", err)
+	}
+	return manifest
 }
 
 func TestExportMessagesUnionsUIDRanges(t *testing.T) {

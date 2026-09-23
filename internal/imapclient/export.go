@@ -23,9 +23,10 @@ import (
 )
 
 var (
-	ErrInvalidExport = errors.New("export request is invalid")
-	ErrExportFailed  = errors.New("IMAP export failed")
-	dialExportClient = imapv2client.DialTLS
+	ErrInvalidExport  = errors.New("export request is invalid")
+	ErrExportFailed   = errors.New("IMAP export failed")
+	dialExportClient  = imapv2client.DialTLS
+	exportMailboxWork = exportMailbox
 )
 
 type ExportMessagesRequest struct {
@@ -47,6 +48,7 @@ type ExportMessagesRequest struct {
 }
 
 type ExportMessagesResult struct {
+	Status              string   `json:"status"`
 	RunDirectory        string   `json:"run_directory"`
 	ManifestPath        string   `json:"manifest_path"`
 	Mailboxes           []string `json:"mailboxes"`
@@ -55,6 +57,7 @@ type ExportMessagesResult struct {
 	ExportedAttachments int      `json:"exported_attachments"`
 	FailedMessages      int      `json:"failed_messages"`
 	FailedAttachments   int      `json:"failed_attachments"`
+	FailedMailboxes     int      `json:"failed_mailboxes"`
 }
 
 type exportManifest struct {
@@ -166,9 +169,11 @@ func ExportMessages(ctx context.Context, config Config, request ExportMessagesRe
 		if !hasMailbox(listed, mailbox) {
 			continue
 		}
-		if err := exportMailbox(ctx, client, mailbox, runDirectory, request, &manifest, manifestPath); err != nil {
+		if err := exportMailboxWork(ctx, client, mailbox, runDirectory, request, &manifest, manifestPath); err != nil {
 			manifest.MailboxErrors = append(manifest.MailboxErrors, exportMailboxError{Mailbox: mailbox, Error: "mailbox export failed"})
-			_ = writeExportManifest(manifestPath, manifest)
+			if err := writeExportManifest(manifestPath, manifest); err != nil {
+				return ExportMessagesResult{}, ErrExportFailed
+			}
 		}
 	}
 
@@ -547,6 +552,7 @@ func writeExportManifest(path string, manifest exportManifest) error {
 
 func summarizeExport(runDirectory, manifestPath string, manifest exportManifest) ExportMessagesResult {
 	result := ExportMessagesResult{RunDirectory: runDirectory, ManifestPath: manifestPath, Mailboxes: append([]string(nil), manifest.Mailboxes...)}
+	result.FailedMailboxes = len(manifest.MailboxErrors)
 	for _, message := range manifest.Messages {
 		result.MatchedMessages++
 		if message.Status == "exported" {
@@ -561,6 +567,13 @@ func summarizeExport(runDirectory, manifestPath string, manifest exportManifest)
 				result.FailedAttachments++
 			}
 		}
+	}
+	if result.FailedMailboxes == 0 && result.FailedMessages == 0 && result.FailedAttachments == 0 {
+		result.Status = "complete"
+	} else if result.FailedMailboxes == len(manifest.Mailboxes) {
+		result.Status = "failed"
+	} else {
+		result.Status = "partial"
 	}
 	return result
 }

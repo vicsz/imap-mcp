@@ -1,6 +1,6 @@
 # bug-002 — Report mailbox-level export failures
 
-Status: draft
+Status: done
 Type: bug
 
 ## Outcome
@@ -28,10 +28,12 @@ export completed, partly completed, or failed at the mailbox level.
 
 ## Done when
 
-- [ ] Offline fake-server tests cover a missing mailbox, a mailbox selection
+- [x] Offline fake-server tests cover a missing mailbox, a mailbox selection
       or search failure, and a mixed successful/failed multi-mailbox run.
-- [ ] Tests distinguish a successful empty export from an all-mailboxes-failed
+- [x] Tests distinguish a successful empty export from an all-mailboxes-failed
       export and assert `status`, `failed_mailboxes`, and manifest contents.
-- [ ] Tests verify message/attachment failures yield `partial` and the
+- [x] Tests verify message/attachment failures yield `partial` and the
       aggregate failure log includes mailbox failures without sensitive data.
-- [ ] `go test ./...` passes.
+- [x] `go test ./...` passes.
+- [x] Targeted live iCloud probe reports a partial result for a missing mailbox
+      while the INBOX query matches no messages and creates no message files.

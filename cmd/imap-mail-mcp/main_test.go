@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"imap-mail-mcp/internal/imapclient"
 	"imap-mail-mcp/internal/observability"
 )
 
@@ -30,10 +31,12 @@ func TestStartupAndPerItemFailuresAreLoggedSafely(t *testing.T) {
 	secret := "DISTINCTIVE-SECRET-RECIPIENT"
 	logServerFailure("startup", errors.New(secret))
 	logToolItemFailures("read_messages", 2)
+	logExportFailures(imapclient.ExportMessagesResult{FailedMailboxes: 1, FailedMessages: 2, FailedAttachments: 3})
 	logs := output.String()
 	for _, expected := range []string{
 		"category=server operation=startup elapsed_ms=0 result=error code=operation_failed level=error",
 		"category=server operation=read_messages elapsed_ms=0 result=error code=item_failures count=2 level=error",
+		"category=server operation=export_messages elapsed_ms=0 result=error code=item_failures count=6 level=error",
 	} {
 		if !strings.Contains(logs, expected) {
 			t.Errorf("log output missing %q: %s", expected, logs)

@@ -62,6 +62,27 @@ func searchIMAP(ctx context.Context, client *imapv2client.Client, criteria *imap
 	})
 }
 
+func capabilitiesIMAP(ctx context.Context, client *imapv2client.Client) (imap.CapSet, error) {
+	return observability.Measure(ctx, "capability", func() (imap.CapSet, error) {
+		// Login invalidates go-imap's cached capabilities; Caps waits for the
+		// post-login CAPABILITY response and returns nil if discovery failed.
+		capabilities := client.Caps()
+		if capabilities == nil {
+			return nil, errors.New("capability discovery failed")
+		}
+		return capabilities, nil
+	})
+}
+
+func sortIMAP(ctx context.Context, client *imapv2client.Client, criteria *imap.SearchCriteria) ([]uint32, error) {
+	return observability.Measure(ctx, "sort", func() ([]uint32, error) {
+		return client.UIDSort(&imapv2client.SortOptions{
+			SortCriteria:   []imapv2client.SortCriterion{{Key: imapv2client.SortKeyArrival}},
+			SearchCriteria: criteria,
+		}).Wait()
+	})
+}
+
 func moveIMAPMessage(ctx context.Context, client *imapv2client.Client, set imap.NumSet, destination string) (*imapv2client.MoveData, error) {
 	return observability.Measure(ctx, "move", func() (*imapv2client.MoveData, error) {
 		return client.Move(set, destination).Wait()

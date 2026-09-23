@@ -101,9 +101,21 @@ func SearchMail(ctx context.Context, config Config, request SearchRequest) (Sear
 	if err := loginIMAPClient(ctx, client, config.Username, config.Password); err != nil {
 		return SearchResult{}, fmt.Errorf("%w: login: %v", ErrSearchFailed, err)
 	}
+	capabilities, err := capabilitiesIMAP(ctx, client)
+	if err != nil {
+		return SearchResult{}, fmt.Errorf("%w: capability", ErrSearchFailed)
+	}
 	selected, err := selectIMAPMailbox(ctx, client, mailbox, &imap.SelectOptions{ReadOnly: true})
 	if err != nil {
 		return SearchResult{}, fmt.Errorf("%w: select: %v", ErrSearchFailed, err)
+	}
+
+	if hasIMAPSortCapability(capabilities) {
+		uids, err := sortIMAP(ctx, client, &criteria)
+		if err != nil {
+			return SearchResult{}, fmt.Errorf("%w: sort", ErrSearchFailed)
+		}
+		return searchSortedUIDs(ctx, client, mailbox, selected.UIDValidity, uids, limit)
 	}
 
 	searchData, err := searchIMAP(ctx, client, &criteria, nil)
@@ -141,6 +153,57 @@ func SearchMail(ctx context.Context, config Config, request SearchRequest) (Sear
 	truncated := len(messages) > limit
 	if truncated {
 		messages = messages[:limit]
+	}
+	return SearchResult{Messages: messages, Truncated: truncated}, nil
+}
+
+func hasIMAPSortCapability(capabilities imap.CapSet) bool {
+	for capability := range capabilities {
+		if strings.EqualFold(string(capability), "SORT") || strings.EqualFold(string(capability), "SORT=DISPLAY") {
+			return true
+		}
+	}
+	return false
+}
+
+func searchSortedUIDs(ctx context.Context, client *imapv2client.Client, mailbox string, uidValidity uint32, sortedUIDs []uint32, limit int) (SearchResult, error) {
+	for left, right := 0, len(sortedUIDs)-1; left < right; left, right = left+1, right-1 {
+		sortedUIDs[left], sortedUIDs[right] = sortedUIDs[right], sortedUIDs[left]
+	}
+	truncated := len(sortedUIDs) > limit
+	if truncated {
+		sortedUIDs = sortedUIDs[:limit]
+	}
+	if len(sortedUIDs) == 0 {
+		return SearchResult{Messages: []SearchMessage{}, Truncated: false}, nil
+	}
+
+	uids := make([]imap.UID, len(sortedUIDs))
+	for index, uid := range sortedUIDs {
+		uids[index] = imap.UID(uid)
+	}
+	fetched, err := fetchIMAPMessages(ctx, client, imap.UIDSetNum(uids...), &imap.FetchOptions{
+		UID:          true,
+		Envelope:     true,
+		Flags:        true,
+		InternalDate: true,
+		RFC822Size:   true,
+	})
+	if err != nil {
+		return SearchResult{}, fmt.Errorf("%w: fetch", ErrSearchFailed)
+	}
+	fetchedByUID := make(map[uint32]SearchMessage, len(fetched))
+	for _, message := range fetched {
+		uid := uint32(message.UID)
+		if _, exists := fetchedByUID[uid]; !exists {
+			fetchedByUID[uid] = toSearchMessage(message, mailbox, uidValidity)
+		}
+	}
+	messages := make([]SearchMessage, 0, len(fetchedByUID))
+	for _, uid := range sortedUIDs {
+		if message, exists := fetchedByUID[uid]; exists {
+			messages = append(messages, message)
+		}
 	}
 	return SearchResult{Messages: messages, Truncated: truncated}, nil
 }

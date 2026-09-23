@@ -3,6 +3,7 @@
 package imapclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"imap-mail-mcp/internal/observability"
 )
 
 func TestIMAPConnectionIntegration(t *testing.T) {
@@ -63,6 +66,34 @@ func TestSearchInboxIntegration(t *testing.T) {
 	if len(result.Messages) == 0 {
 		t.Fatal("Inbox search returned no messages")
 	}
+}
+
+func TestSearchInboxSORTIntegration(t *testing.T) {
+	config := integrationConfig(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	var logs bytes.Buffer
+	restore := observability.SetTestWriter(&logs)
+	defer restore()
+	_, err := SearchMail(ctx, config, SearchRequest{
+		Mailbox: DefaultMailbox,
+		Since:   time.Now().UTC().AddDate(0, 0, -30).Format("2006-01-02"),
+		Limit:   1,
+	})
+	if err != nil {
+		t.Fatal("live INBOX search failed")
+	}
+	if strings.Contains(logs.String(), "operation=sort") {
+		if !strings.Contains(logs.String(), "operation=sort ") || !strings.Contains(logs.String(), "result=success") {
+			t.Fatal("live SORT operation did not complete successfully")
+		}
+		return
+	}
+	if !strings.Contains(logs.String(), "operation=search") {
+		t.Fatal("live search did not record either the SORT or fallback search operation")
+	}
+	t.Skip("configured account does not advertise SORT; fallback search passed, live SORT-path verification is unavailable")
 }
 
 func TestSearchUIDRangeUnionIntegration(t *testing.T) {

@@ -62,6 +62,68 @@ func TestSearchInboxIntegration(t *testing.T) {
 	}
 }
 
+func TestSearchUIDRangeUnionIntegration(t *testing.T) {
+	config := integrationConfig(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	candidates, err := SearchMail(ctx, config, SearchRequest{Mailbox: DefaultMailbox, Limit: 100})
+	if err != nil {
+		t.Fatal("could not search INBOX for UID range test candidates")
+	}
+	if len(candidates.Messages) < 2 {
+		t.Skip("INBOX has fewer than two messages to test UID range union")
+	}
+
+	first := candidates.Messages[0]
+	second := candidates.Messages[1]
+	if first.UID == second.UID || first.UIDValidity != second.UIDValidity {
+		t.Fatal("candidate messages do not have distinct UIDs in one mailbox epoch")
+	}
+
+	searchOne := func(uid uint32) {
+		t.Helper()
+		result, err := SearchMail(ctx, config, SearchRequest{
+			Mailbox:   DefaultMailbox,
+			UIDRanges: []UIDRange{{Start: uid, End: uid}},
+			Limit:     2,
+		})
+		if err != nil {
+			t.Fatal("single UID search failed")
+		}
+		if len(result.Messages) != 1 || result.Messages[0].UID != uid || result.Messages[0].UIDValidity != first.UIDValidity {
+			t.Fatal("single UID search did not return its expected message")
+		}
+	}
+	searchOne(first.UID)
+	searchOne(second.UID)
+
+	combined, err := SearchMail(ctx, config, SearchRequest{
+		Mailbox: DefaultMailbox,
+		UIDRanges: []UIDRange{
+			{Start: first.UID, End: first.UID},
+			{Start: second.UID, End: second.UID},
+		},
+		Limit: 2,
+	})
+	if err != nil {
+		t.Fatal("combined UID range search failed")
+	}
+	if len(combined.Messages) != 2 || combined.Truncated {
+		t.Fatal("combined UID range search did not return exactly two messages")
+	}
+	wantUIDs := map[uint32]bool{first.UID: true, second.UID: true}
+	for _, message := range combined.Messages {
+		if message.UIDValidity != first.UIDValidity || !wantUIDs[message.UID] {
+			t.Fatal("combined UID range search returned an unexpected message")
+		}
+		delete(wantUIDs, message.UID)
+	}
+	if len(wantUIDs) != 0 {
+		t.Fatal("combined UID range search omitted an expected message")
+	}
+}
+
 func TestReadInboxMessageIntegration(t *testing.T) {
 	config := integrationConfig(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

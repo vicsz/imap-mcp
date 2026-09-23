@@ -1,6 +1,6 @@
 # bug-001 — Union UID ranges in search and export
 
-Status: draft
+Status: done
 Type: bug
 
 ## Outcome
@@ -21,10 +21,12 @@ produce an empty result because IMAP intersects separate search keys.
 
 ## Done when
 
-- [ ] Offline fake-server tests for both tools select the expected message
+- [x] Offline fake-server tests for both tools select the expected message
       identities from two disjoint singleton ranges and two nonadjacent spans.
-- [ ] Tests cover an absent UID, overlapping ranges without duplicates, and a
+- [x] Tests cover an absent UID, overlapping ranges without duplicates, and a
       UID-range union combined with another filter.
-- [ ] A genuine zero-match search/export remains distinguishable from an
+- [x] A genuine zero-match search/export remains distinguishable from an
       operation failure.
-- [ ] `go test ./...` passes.
+- [x] An opt-in live IMAP test verifies two existing INBOX UIDs separately and
+      together without logging message content or account-specific identifiers.
+- [x] `go test ./...` passes.

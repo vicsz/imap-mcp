@@ -122,6 +122,77 @@ func TestExportMessagesEmptyResult(t *testing.T) {
 	}
 }
 
+func TestExportMessagesUnionsUIDRanges(t *testing.T) {
+	server, user, listener := newSearchTestServer(t)
+	defer server.Close()
+	if err := user.Create("INBOX", nil); err != nil {
+		t.Fatalf("create INBOX: %v", err)
+	}
+	appendExportMessage(t, user, "INBOX", "first@example.com", "First message", false)
+	appendExportMessage(t, user, "INBOX", "second@example.com", "Second message", false)
+	appendExportMessage(t, user, "INBOX", "third@example.com", "Third message", false)
+	appendExportMessage(t, user, "INBOX", "fourth@example.com", "Fourth message", false)
+
+	previous := dialExportClient
+	dialExportClient = func(_ string, _ *imapv2client.Options) (*imapv2client.Client, error) {
+		clientConn, serverConn := net.Pipe()
+		listener.connections <- serverConn
+		return imapv2client.New(clientConn, nil), nil
+	}
+	defer func() { dialExportClient = previous }()
+
+	tests := []struct {
+		name     string
+		ranges   []UIDRange
+		wantUIDs []uint32
+	}{
+		{name: "disjoint singleton ranges", ranges: []UIDRange{{Start: 1, End: 1}, {Start: 3, End: 3}}, wantUIDs: []uint32{1, 3}},
+		{name: "nonadjacent spans", ranges: []UIDRange{{Start: 1, End: 2}, {Start: 4, End: 4}}, wantUIDs: []uint32{1, 2, 4}},
+		{name: "no UID matches", ranges: []UIDRange{{Start: 99, End: 99}, {Start: 100, End: 100}}, wantUIDs: []uint32{}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := ExportMessages(context.Background(), Config{Username: "test-user", Password: "test-password"}, ExportMessagesRequest{
+				Destination: t.TempDir(),
+				UIDRanges:   test.ranges,
+			})
+			if err != nil {
+				t.Fatalf("ExportMessages: %v", err)
+			}
+			if result.MatchedMessages != len(test.wantUIDs) || result.ExportedMessages != len(test.wantUIDs) {
+				t.Fatalf("export summary = %#v, want %d matched and exported", result, len(test.wantUIDs))
+			}
+			manifestData, err := os.ReadFile(result.ManifestPath)
+			if err != nil {
+				t.Fatalf("read manifest: %v", err)
+			}
+			var manifest exportManifest
+			if err := json.Unmarshal(manifestData, &manifest); err != nil {
+				t.Fatalf("decode manifest: %v", err)
+			}
+			if len(manifest.Messages) != len(test.wantUIDs) {
+				t.Fatalf("manifest has %d messages, want %d", len(manifest.Messages), len(test.wantUIDs))
+			}
+			wantUIDs := make(map[uint32]bool, len(test.wantUIDs))
+			for _, uid := range test.wantUIDs {
+				wantUIDs[uid] = true
+			}
+			for _, message := range manifest.Messages {
+				if message.Reference.Mailbox != "INBOX" || message.Reference.UIDValidity == 0 {
+					t.Fatalf("invalid exported identity: %#v", message.Reference)
+				}
+				if message.Status != "exported" || !wantUIDs[message.Reference.UID] {
+					t.Fatalf("unexpected or duplicate exported message: %#v", message)
+				}
+				delete(wantUIDs, message.Reference.UID)
+			}
+			if len(wantUIDs) != 0 {
+				t.Fatalf("missing exported UIDs: %#v", wantUIDs)
+			}
+		})
+	}
+}
+
 func TestValidateExportRequest(t *testing.T) {
 	if err := validateExportRequest(ExportMessagesRequest{Destination: "relative"}); err != ErrInvalidExport {
 		t.Fatalf("relative destination error = %v", err)

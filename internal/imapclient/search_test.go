@@ -27,7 +27,7 @@ func TestBuildSearchCriteriaMapsTypedFilters(t *testing.T) {
 		WithoutFlags:     []string{"\\Draft"},
 		LargerThanBytes:  100,
 		SmallerThanBytes: 1000,
-		UIDRanges:        []UIDRange{{Start: 10, End: 20}},
+		UIDRanges:        []UIDRange{{Start: 10, End: 12}, {Start: 15, End: 20}},
 	})
 	if err != nil {
 		t.Fatalf("buildSearchCriteria: %v", err)
@@ -40,6 +40,9 @@ func TestBuildSearchCriteriaMapsTypedFilters(t *testing.T) {
 	}
 	if len(criteria.Header) != 1 || len(criteria.Body) != 1 || len(criteria.Text) != 1 || len(criteria.Flag) != 1 || len(criteria.NotFlag) != 1 || len(criteria.UID) != 1 {
 		t.Fatalf("criteria did not map all filters: %+v", criteria)
+	}
+	if len(criteria.UID[0]) != 2 {
+		t.Fatalf("UID ranges were not combined into one set: %#v", criteria.UID)
 	}
 	if criteria.Larger != 100 || criteria.Smaller != 1000 {
 		t.Fatalf("size criteria = %d/%d", criteria.Larger, criteria.Smaller)
@@ -121,6 +124,72 @@ func TestSearchMailFakeServerCoversTypedFiltersAndOrdering(t *testing.T) {
 				if message.Mailbox != "INBOX" || message.UIDValidity == 0 || message.UID == 0 {
 					t.Fatalf("invalid message reference: %#v", message)
 				}
+			}
+		})
+	}
+	uidRangeTests := []struct {
+		name     string
+		request  SearchRequest
+		wantUIDs []uint32
+	}{
+		{
+			name:     "disjoint singleton ranges",
+			request:  SearchRequest{UIDRanges: []UIDRange{{Start: 1, End: 1}, {Start: 3, End: 3}}},
+			wantUIDs: []uint32{1, 3},
+		},
+		{
+			name:     "nonadjacent spans",
+			request:  SearchRequest{UIDRanges: []UIDRange{{Start: 1, End: 2}, {Start: 4, End: 4}}},
+			wantUIDs: []uint32{1, 2, 4},
+		},
+		{
+			name:     "absent UID is ignored",
+			request:  SearchRequest{UIDRanges: []UIDRange{{Start: 1, End: 1}, {Start: 99, End: 99}}},
+			wantUIDs: []uint32{1},
+		},
+		{
+			name:     "overlapping ranges do not duplicate results",
+			request:  SearchRequest{UIDRanges: []UIDRange{{Start: 1, End: 3}, {Start: 2, End: 4}}},
+			wantUIDs: []uint32{1, 2, 3, 4},
+		},
+		{
+			name: "union is ANDed with other filters",
+			request: SearchRequest{
+				UIDRanges: []UIDRange{{Start: 1, End: 1}, {Start: 4, End: 4}},
+				Text:      []string{"special"},
+			},
+			wantUIDs: []uint32{4},
+		},
+		{
+			name:     "no UID matches",
+			request:  SearchRequest{UIDRanges: []UIDRange{{Start: 99, End: 99}, {Start: 100, End: 100}}},
+			wantUIDs: []uint32{},
+		},
+	}
+	for _, test := range uidRangeTests {
+		t.Run("uid ranges/"+test.name, func(t *testing.T) {
+			result, err := SearchMail(ctx, config, test.request)
+			if err != nil {
+				t.Fatalf("SearchMail: %v", err)
+			}
+			if len(result.Messages) != len(test.wantUIDs) {
+				t.Fatalf("message count = %d, want %d: %#v", len(result.Messages), len(test.wantUIDs), result.Messages)
+			}
+			wantUIDs := make(map[uint32]bool, len(test.wantUIDs))
+			for _, uid := range test.wantUIDs {
+				wantUIDs[uid] = true
+			}
+			for _, message := range result.Messages {
+				if !wantUIDs[message.UID] {
+					t.Fatalf("unexpected or duplicate UID %d in result %#v", message.UID, result.Messages)
+				}
+				delete(wantUIDs, message.UID)
+			}
+			if len(wantUIDs) != 0 {
+				t.Fatalf("missing UIDs from result: %#v", wantUIDs)
+			}
+			if len(result.Messages) == 0 && result.Truncated {
+				t.Fatal("empty result must not be marked truncated")
 			}
 		})
 	}

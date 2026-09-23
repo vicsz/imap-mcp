@@ -219,11 +219,16 @@ func buildSearchCriteria(request SearchRequest) (imap.SearchCriteria, int, error
 	if criteria.Smaller > 0 && criteria.Larger > 0 && criteria.Smaller <= criteria.Larger {
 		return imap.SearchCriteria{}, 0, ErrInvalidSearch
 	}
+	uidSet := make(imap.UIDSet, 0, len(request.UIDRanges))
 	for _, uidRange := range request.UIDRanges {
 		if uidRange.Start == 0 || uidRange.End == 0 || uidRange.End < uidRange.Start {
 			return imap.SearchCriteria{}, 0, ErrInvalidSearch
 		}
-		criteria.UID = append(criteria.UID, imap.UIDSet{{Start: imap.UID(uidRange.Start), Stop: imap.UID(uidRange.End)}})
+		uidSet = append(uidSet, imap.UIDRange{Start: imap.UID(uidRange.Start), Stop: imap.UID(uidRange.End)})
+	}
+	if len(uidSet) > 0 {
+		// Keep the ranges in one UID search key; separate UID keys are ANDed.
+		criteria.UID = append(criteria.UID, uidSet)
 	}
 	return criteria, limit, nil
 }
